@@ -10,7 +10,7 @@ import json
 #        PART 1: API CLIENT LOGIC
 # ==========================================
 
-API_URL = "http://localhost:8000"
+API_URL = "https://zero-code-platform.onrender.com"
 
 def register_user(username, email, password):
     try:
