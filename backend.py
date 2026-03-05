@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -10,7 +10,7 @@ import base64
 
 app = FastAPI()
 
-# CORS - Allow all origins for Streamlit frontend
+# CORS - Allow all origins for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,7 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic Models for Request Bodies
+# ──────────────────── Pydantic Models ────────────────────
+
 class UserLogin(BaseModel):
     email: str
     password: str
@@ -29,19 +30,15 @@ class UserRegister(BaseModel):
     email: str
     password: str
 
-class CRMInstanceCreate(BaseModel):
-    username: str
-    brand_name: str
-    brand_color: str
-    # Logo handled via UploadFile
-
 class BillingEntry(BaseModel):
+    username: str          # DATA ISOLATION
     customer_name: str
     item_name: str
     cost: float
     quantity: int
 
 class WorkerCreate(BaseModel):
+    username: str          # DATA ISOLATION
     name: str
     email: str
     phone: str
@@ -52,27 +49,34 @@ class WorkerCreate(BaseModel):
 class AttendanceEntry(BaseModel):
     id: int
     name: str
-    type: str # worker_type
+    type: str
     status: str
 
+class AttendanceBulk(BaseModel):
+    username: str          # DATA ISOLATION
+    entries: List[AttendanceEntry]
+
 class ExpenseCreate(BaseModel):
+    username: str          # DATA ISOLATION
     category: str
     description: str
     amount: float
-    user: str
 
 class SalesOrderCreate(BaseModel):
+    username: str          # DATA ISOLATION
     customer: str
     amount: float
     status: str
 
 class CampaignCreate(BaseModel):
+    username: str          # DATA ISOLATION
     name: str
     audience: str
     budget: float
     status: str
 
 class RentalBookingCreate(BaseModel):
+    username: str          # DATA ISOLATION
     name: str
     room: str
     rent: float
@@ -80,34 +84,40 @@ class RentalBookingCreate(BaseModel):
     phone: str
 
 class RestaurantSaleCreate(BaseModel):
+    username: str          # DATA ISOLATION
     table_no: int
     items: str
     amount: float
     mode: str
 
 class LeadCreate(BaseModel):
+    username: str          # DATA ISOLATION
     name: str
     email: str
     source: str
     status: str
 
 class LeaveRequestCreate(BaseModel):
+    username: str          # DATA ISOLATION
     name: str
     l_type: str
     days: int
 
 class PayrollCreate(BaseModel):
+    username: str          # DATA ISOLATION
     name: str
     month: str
     amount: float
 
 class InvoiceCreate(BaseModel):
+    username: str          # DATA ISOLATION
     customer: str
     amount: float
     due_date: str
     status: str
 
-# Initialize DB
+# ──────────────────── Startup ────────────────────
+
 @app.on_event("startup")
 def on_startup():
     init_db()
@@ -116,25 +126,28 @@ def on_startup():
 def read_root():
     return {"message": "API is running"}
 
-# Auth
+# ──────────────────── Auth ────────────────────
+
 @app.post("/register")
 def register(user: UserRegister, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user.email).first()
-    if db_user:
+    if db.query(models.User).filter(models.User.email == user.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    new_user = models.User(username=user.username, email=user.email, password=user.password)
-    db.add(new_user)
+    db.add(models.User(username=user.username, email=user.email, password=user.password))
     db.commit()
     return {"message": "User registered"}
 
 @app.post("/login")
 def login(user: UserLogin, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user.email, models.User.password == user.password).first()
+    db_user = db.query(models.User).filter(
+        models.User.email == user.email,
+        models.User.password == user.password
+    ).first()
     if db_user:
         return {"username": db_user.username}
     raise HTTPException(status_code=400, detail="Invalid credentials")
 
-# CRM
+# ──────────────────── CRM ────────────────────
+
 @app.post("/crm/instance")
 def create_crm_instance(
     username: str = Form(...),
@@ -144,57 +157,52 @@ def create_crm_instance(
     db: Session = Depends(get_db)
 ):
     logo_bytes = logo.file.read() if logo else None
-    new_instance = models.CRMInstance(
+    db.add(models.CRMInstance(
         instance_user=username,
         brand_name=brand_name,
         brand_color=brand_color,
         logo=logo_bytes
-    )
-    db.add(new_instance)
+    ))
     db.commit()
     return {"message": "CRM Instance Created"}
 
 @app.get("/crm/instance/{username}")
 def get_crm_instance(username: str, db: Session = Depends(get_db)):
-    instance = db.query(models.CRMInstance).filter(models.CRMInstance.instance_user == username).order_by(models.CRMInstance.id.desc()).first()
-    if instance and instance.logo:
-        logo_b64 = base64.b64encode(instance.logo).decode('utf-8')
-    else:
-        logo_b64 = None
-        
+    instance = db.query(models.CRMInstance).filter(
+        models.CRMInstance.instance_user == username
+    ).order_by(models.CRMInstance.id.desc()).first()
     if instance:
-        return {
-            "brand_name": instance.brand_name,
-            "brand_color": instance.brand_color,
-            "logo": logo_b64
-        }
+        logo_b64 = base64.b64encode(instance.logo).decode() if instance.logo else None
+        return {"brand_name": instance.brand_name, "brand_color": instance.brand_color, "logo": logo_b64}
     return {}
 
-# Billing
+# ──────────────────── Billing ────────────────────
+
 @app.post("/billing")
 def add_billing(entry: BillingEntry, db: Session = Depends(get_db)):
-    new_bill = models.Billing(
+    db.add(models.Billing(
+        username=entry.username,
         customer_name=entry.customer_name,
         item_name=entry.item_name,
         cost=entry.cost,
         quantity=entry.quantity,
-        # customer_id generated by DB sequence or random if needed
-    )
-    db.add(new_bill)
+    ))
     db.commit()
     return {"message": "Bill Saved"}
 
 @app.get("/billing")
-def get_billing(db: Session = Depends(get_db)):
-    # Original logic returned tuples with days/years. 
-    # We will return list of objects and let frontend handle display
-    bills = db.query(models.Billing).order_by(models.Billing.date_of_entering.desc()).all()
+def get_billing(username: str = Query(...), db: Session = Depends(get_db)):
+    bills = db.query(models.Billing).filter(
+        models.Billing.username == username
+    ).order_by(models.Billing.date_of_entering.desc()).all()
     return bills
 
-# Workers
+# ──────────────────── Workers ────────────────────
+
 @app.post("/workers")
 def add_worker(worker: WorkerCreate, db: Session = Depends(get_db)):
     new_worker = models.Worker(
+        username=worker.username,
         name=worker.name,
         email=worker.email,
         phone_number=worker.phone,
@@ -205,11 +213,11 @@ def add_worker(worker: WorkerCreate, db: Session = Depends(get_db)):
     db.add(new_worker)
     db.commit()
     db.refresh(new_worker)
-    return {"message": f"Worker Added! ID: {new_worker.worker_id}"} # Returning generated ID
+    return {"message": f"Worker Added! ID: {new_worker.worker_id}"}
 
 @app.get("/workers")
-def get_workers(only_active: bool = False, db: Session = Depends(get_db)):
-    query = db.query(models.Worker)
+def get_workers(username: str = Query(...), only_active: bool = False, db: Session = Depends(get_db)):
+    query = db.query(models.Worker).filter(models.Worker.username == username)
     if only_active:
         query = query.filter(models.Worker.removed_date == None)
     return query.all()
@@ -223,100 +231,112 @@ def fire_worker(worker_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Worker Fired"}
 
-# Attendance
+# ──────────────────── Attendance ────────────────────
+
 @app.post("/attendance")
-def save_attendance(data: List[AttendanceEntry], db: Session = Depends(get_db)):
-    count = 0
-    for row in data:
-        att = models.Attendance(
+def save_attendance(data: AttendanceBulk, db: Session = Depends(get_db)):
+    for row in data.entries:
+        db.add(models.Attendance(
+            username=data.username,
             worker_id=row.id,
             worker_name=row.name,
             worker_type=row.type,
             status=row.status
-        )
-        db.add(att)
-        count += 1
+        ))
     db.commit()
-    return {"message": f"Marked attendance for {count} workers"}
+    return {"message": f"Marked attendance for {len(data.entries)} workers"}
 
 @app.get("/attendance")
-def get_attendance(db: Session = Depends(get_db)):
-    return db.query(models.Attendance).order_by(models.Attendance.date.desc()).all()
+def get_attendance(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Attendance).filter(
+        models.Attendance.username == username
+    ).order_by(models.Attendance.date.desc()).all()
 
-# Expenses
+# ──────────────────── Expenses ────────────────────
+
 @app.post("/expenses")
 def add_expense(exp: ExpenseCreate, db: Session = Depends(get_db)):
-    new_exp = models.Expense(
+    db.add(models.Expense(
+        username=exp.username,
         category=exp.category,
         description=exp.description,
         amount=exp.amount,
-        submitted_by=exp.user
-    )
-    db.add(new_exp)
+        submitted_by=exp.username
+    ))
     db.commit()
     return {"message": "Expense Logged"}
 
 @app.get("/expenses")
-def get_expenses(db: Session = Depends(get_db)):
-    return db.query(models.Expense).order_by(models.Expense.expense_date.desc()).all()
+def get_expenses(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Expense).filter(
+        models.Expense.username == username
+    ).order_by(models.Expense.expense_date.desc()).all()
 
-# Sales
+# ──────────────────── Sales ────────────────────
+
 @app.post("/sales")
 def add_sale(sale: SalesOrderCreate, db: Session = Depends(get_db)):
-    new_sale = models.SalesOrder(
+    db.add(models.SalesOrder(
+        username=sale.username,
         customer_name=sale.customer,
         amount=sale.amount,
         status=sale.status
-    )
-    db.add(new_sale)
+    ))
     db.commit()
     return {"message": "Order Created"}
 
 @app.get("/sales")
-def get_sales(db: Session = Depends(get_db)):
-    return db.query(models.SalesOrder).order_by(models.SalesOrder.order_date.desc()).all()
+def get_sales(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.SalesOrder).filter(
+        models.SalesOrder.username == username
+    ).order_by(models.SalesOrder.order_date.desc()).all()
 
-# Ledger
+# ──────────────────── Ledger ────────────────────
+
 @app.get("/ledger")
-def get_ledger(db: Session = Depends(get_db)):
-    return db.query(models.Ledger).all()
+def get_ledger(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Ledger).filter(models.Ledger.username == username).all()
 
-# Campaigns
+# ──────────────────── Campaigns ────────────────────
+
 @app.post("/campaigns")
 def add_campaign(camp: CampaignCreate, db: Session = Depends(get_db)):
-    new_camp = models.Campaign(
+    db.add(models.Campaign(
+        username=camp.username,
         campaign_name=camp.name,
         target_audience=camp.audience,
         budget=camp.budget,
         status=camp.status
-    )
-    db.add(new_camp)
+    ))
     db.commit()
     return {"message": "Campaign Launched"}
 
 @app.get("/campaigns")
-def get_campaigns(db: Session = Depends(get_db)):
-    return db.query(models.Campaign).all()
+def get_campaigns(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Campaign).filter(
+        models.Campaign.username == username
+    ).all()
 
-# Rental
+# ──────────────────── Rental ────────────────────
+
 @app.post("/rental")
 def add_rental(booking: RentalBookingCreate, db: Session = Depends(get_db)):
-    new_booking = models.RentalBooking(
+    db.add(models.RentalBooking(
+        username=booking.username,
         tenant_name=booking.name,
         room_number=booking.room,
         monthly_rent=booking.rent,
         security_deposit=booking.deposit,
         phone=booking.phone
-    )
-    db.add(new_booking)
+    ))
     db.commit()
     return {"message": "Tenant Booked"}
 
 @app.post("/rental/vacate")
-def vacate_rental(room_number: str, db: Session = Depends(get_db)):
-    # Note: room_number param is query param or body? Using Query for simplicity
+def vacate_rental(room_number: str, username: str = Query(...), db: Session = Depends(get_db)):
     booking = db.query(models.RentalBooking).filter(
-        models.RentalBooking.room_number == room_number, 
+        models.RentalBooking.username == username,
+        models.RentalBooking.room_number == room_number,
         models.RentalBooking.status == 'Occupied'
     ).first()
     if booking:
@@ -327,91 +347,106 @@ def vacate_rental(room_number: str, db: Session = Depends(get_db)):
     raise HTTPException(status_code=404, detail="Room not found or already vacated")
 
 @app.get("/rental")
-def get_rental(status: str = "All", db: Session = Depends(get_db)):
-    query = db.query(models.RentalBooking)
+def get_rental(username: str = Query(...), status: str = "All", db: Session = Depends(get_db)):
+    query = db.query(models.RentalBooking).filter(models.RentalBooking.username == username)
     if status != "All":
         query = query.filter(models.RentalBooking.status == status)
     return query.order_by(models.RentalBooking.join_date.desc()).all()
 
-# Restaurant
+# ──────────────────── Restaurant ────────────────────
+
 @app.post("/restaurant/sales")
 def add_restaurant_sale(sale: RestaurantSaleCreate, db: Session = Depends(get_db)):
-    new_sale = models.RestaurantSale(
+    db.add(models.RestaurantSale(
+        username=sale.username,
         table_number=sale.table_no,
         items_ordered=sale.items,
         total_amount=sale.amount,
         payment_mode=sale.mode
-    )
-    db.add(new_sale)
+    ))
     db.commit()
     return {"message": "Bill Saved"}
 
 @app.get("/restaurant/sales")
-def get_restaurant_sales(db: Session = Depends(get_db)):
-    return db.query(models.RestaurantSale).order_by(models.RestaurantSale.sale_date.desc()).all()
+def get_restaurant_sales(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.RestaurantSale).filter(
+        models.RestaurantSale.username == username
+    ).order_by(models.RestaurantSale.sale_date.desc()).all()
 
-# Marketing Leads
+# ──────────────────── Leads ────────────────────
+
 @app.post("/leads")
 def add_lead(lead: LeadCreate, db: Session = Depends(get_db)):
-    new_lead = models.Lead(
+    db.add(models.Lead(
+        username=lead.username,
         lead_name=lead.name,
         email=lead.email,
         source=lead.source,
         status=lead.status
-    )
-    db.add(new_lead)
+    ))
     db.commit()
     return {"message": "Lead Added"}
 
 @app.get("/leads")
-def get_leads(db: Session = Depends(get_db)):
-    return db.query(models.Lead).order_by(models.Lead.created_date.desc()).all()
+def get_leads(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Lead).filter(
+        models.Lead.username == username
+    ).order_by(models.Lead.created_date.desc()).all()
 
-# HR Leaves
+# ──────────────────── HR Leaves ────────────────────
+
 @app.post("/hr/leaves")
 def add_leave(leave: LeaveRequestCreate, db: Session = Depends(get_db)):
-    new_leave = models.LeaveRequest(
+    db.add(models.LeaveRequest(
+        username=leave.username,
         worker_name=leave.name,
         leave_type=leave.l_type,
         days=leave.days
-    )
-    db.add(new_leave)
+    ))
     db.commit()
     return {"message": "Leave Request Sent"}
 
 @app.get("/hr/leaves")
-def get_leaves(db: Session = Depends(get_db)):
-    return db.query(models.LeaveRequest).order_by(models.LeaveRequest.request_date.desc()).all()
+def get_leaves(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.LeaveRequest).filter(
+        models.LeaveRequest.username == username
+    ).order_by(models.LeaveRequest.request_date.desc()).all()
 
-# HR Payroll
+# ──────────────────── HR Payroll ────────────────────
+
 @app.post("/hr/payroll")
 def add_payroll(pay: PayrollCreate, db: Session = Depends(get_db)):
-    new_pay = models.Payroll(
+    db.add(models.Payroll(
+        username=pay.username,
         worker_name=pay.name,
         salary_month=pay.month,
         amount_paid=pay.amount
-    )
-    db.add(new_pay)
+    ))
     db.commit()
     return {"message": "Salary Processed"}
 
 @app.get("/hr/payroll")
-def get_payroll(db: Session = Depends(get_db)):
-    return db.query(models.Payroll).order_by(models.Payroll.payment_date.desc()).all()
+def get_payroll(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Payroll).filter(
+        models.Payroll.username == username
+    ).order_by(models.Payroll.payment_date.desc()).all()
 
-# Invoices
+# ──────────────────── Invoices ────────────────────
+
 @app.post("/invoices")
 def add_invoice(inv: InvoiceCreate, db: Session = Depends(get_db)):
-    new_inv = models.Invoice(
+    db.add(models.Invoice(
+        username=inv.username,
         customer_name=inv.customer,
         amount=inv.amount,
         due_date=inv.due_date,
         status=inv.status
-    )
-    db.add(new_inv)
+    ))
     db.commit()
     return {"message": "Invoice Created"}
 
 @app.get("/invoices")
-def get_invoices(db: Session = Depends(get_db)):
-    return db.query(models.Invoice).order_by(models.Invoice.created_date.desc()).all()
+def get_invoices(username: str = Query(...), db: Session = Depends(get_db)):
+    return db.query(models.Invoice).filter(
+        models.Invoice.username == username
+    ).order_by(models.Invoice.created_date.desc()).all()
